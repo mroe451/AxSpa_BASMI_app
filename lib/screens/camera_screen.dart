@@ -31,6 +31,17 @@ class _CameraScreenState extends State<CameraScreen> {
   int? _videoH;
   String _stage = "positioning";
   String _resultText = "";
+  bool _autoMode = true;
+  int? _countdownValue;
+  DateTime? _readySince;
+  DateTime? _movementSince;
+  bool _countdownRunning = false;
+  bool _isCalibrating = false;
+  Offset? _calibPoint1;
+  Offset? _calibPoint2;
+  double? _cmPerPixel;
+  final GlobalKey _previewKey = GlobalKey();
+  double? _ankleWidthCm;
 
   @override
   void initState() {
@@ -71,9 +82,21 @@ class _CameraScreenState extends State<CameraScreen> {
     //   context,
     // ).showSnackBar(SnackBar(content: Text('${widget.measurement} captured!')));
 
-    if (_keypoints == null) return;
+    if (_keypoints == null) {
+      return;
+    }
 
     final snapshot = List<dynamic>.from(_keypoints!);
+
+    if (widget.measurement == "Intermalleolar Distance") {
+      _capturedStart = snapshot;
+      _calculateIntermalleolar();
+
+      setState(() {
+        _stage = "result";
+      });
+      return;
+    }
 
     if (_stage == "positioning") {
       _capturedStart = snapshot;
@@ -99,7 +122,11 @@ class _CameraScreenState extends State<CameraScreen> {
       _capturedEnd = null;
       _stage = "positioning";
       _resultText = "";
+      _countdownValue = null;
     });
+    _readySince = null;
+    _movementSince = null;
+    _countdownRunning = false;
   }
 
   void _calculateMeasurement() {
@@ -113,7 +140,9 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   void _calculateIntermalleolar() {
-    if (_capturedStart == null) return;
+    if (_capturedStart == null) {
+      return;
+    }
 
     final leftAnkle = getKeypoint(_capturedStart!, 'left_ankle');
     final rightAnkle = getKeypoint(_capturedStart!, 'right_ankle');
@@ -124,14 +153,30 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     final distPx = distance(leftAnkle, rightAnkle);
+    final approxCm = _pxToCm(distPx);
 
-    final approxCm = distPx * 0.1;
+    double correctedCm = approxCm;
+    if (_ankleWidthCm != null && _ankleWidthCm! > 0) {
+      correctedCm = (approxCm - (_ankleWidthCm! * 1.1)).clamp(
+        0.0,
+        double.infinity,
+      );
+    }
 
-    _setAndSaveResult("Distance: ${approxCm.toStringAsFixed(1)} cm");
+    if (_ankleWidthCm != null) {
+      _setAndSaveResult(
+        "Intermalleolar: ${correctedCm.toStringAsFixed(1)} cm "
+        "(raw: ${approxCm.toStringAsFixed(1)} cm",
+      );
+    } else {
+      _setAndSaveResult("Distance: ${approxCm.toStringAsFixed(1)} cm");
+    }
   }
 
   void _calculateSideFlexion() {
-    if (_capturedStart == null || _capturedEnd == null) return;
+    if (_capturedStart == null || _capturedEnd == null) {
+      return;
+    }
 
     final startWrist = getKeypoint(_capturedStart!, 'left_wrist');
     final startHip = getKeypoint(_capturedStart!, 'left_hip');
@@ -151,21 +196,23 @@ class _CameraScreenState extends State<CameraScreen> {
     final endOffset = getY(endWrist) - getY(endHip);
 
     final deltaPx = endOffset - startOffset;
-    final approxCm = deltaPx.abs() * 0.1;
+    final approxCm = _pxToCm(deltaPx.abs());
 
     _setAndSaveResult("Side flexion: ${approxCm.toStringAsFixed(1)} cm");
   }
 
   void _calculateCervicalRotation() {
-    if (_capturedStart == null || _capturedEnd == null) return;
+    if (_capturedStart == null || _capturedEnd == null) {
+      return;
+    }
 
     final startNose = getKeypoint(_capturedStart!, 'nose');
     final startLeftShoulder = getKeypoint(_capturedStart!, 'left_shoulder');
     final startRightShoulder = getKeypoint(_capturedStart!, 'right_shoulder');
 
     final endNose = getKeypoint(_capturedEnd!, 'nose');
-    final endLeftShoulder = getKeypoint(_capturedStart!, 'left_shoulder');
-    final endRightShoulder = getKeypoint(_capturedStart!, 'right_shoulder');
+    final endLeftShoulder = getKeypoint(_capturedEnd!, 'left_shoulder');
+    final endRightShoulder = getKeypoint(_capturedEnd!, 'right_shoulder');
 
     if (startNose == null ||
         startLeftShoulder == null ||
@@ -206,9 +253,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
   String _instructionText() {
     if (widget.measurement == "Intermalleolar Distance") {
-      return _stage == "positioning"
-          ? "Stand facing the camera and capture your starting position"
-          : "Move your feet apart and capture again";
+      // return _stage == "positioning"
+      //     ? "Stand facing the camera and capture your starting position"
+      //     : "Move your feet apart and capture again";
+      return "Stand facing the camera with feet apart and hold still for capture";
     } else if (widget.measurement == "Lateral Flexion") {
       return _stage == "positioning"
           ? "Stand upright and capture your neutral posture"
@@ -253,6 +301,8 @@ class _CameraScreenState extends State<CameraScreen> {
         _videoH = vh;
         _keypoints = keypoints as List<dynamic>;
       });
+
+      _handleAutoCapture();
     }
   }
 
@@ -499,6 +549,344 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
+  bool _isReadyNow() {
+    return _guidanceState().isReady;
+  }
+
+  double? _movementAmountFromStart() {
+    if (_capturedStart == null || _keypoints == null) {
+      return null;
+    }
+
+    if (widget.measurement == "Lateral Flexion") {
+      final startWrist = getKeypoint(_capturedStart!, 'left_wrist');
+      final startHip = getKeypoint(_capturedStart!, 'left_hip');
+      final liveWrist = getKeypoint(_keypoints!, 'left_wrist');
+      final liveHip = getKeypoint(_keypoints!, 'left_hip');
+
+      if (startWrist == null ||
+          startHip == null ||
+          liveWrist == null ||
+          liveHip == null) {
+        return null;
+      }
+
+      final startOffset = getY(startWrist) - getY(startHip);
+      final liveOffset = getY(liveWrist) - getY(liveHip);
+      return (liveOffset - startOffset).abs();
+    }
+
+    if (widget.measurement == 'Cervical Rotation') {
+      final startLeftShoulder = getKeypoint(_capturedStart!, 'left_shoulder');
+      final startRightShoulder = getKeypoint(_capturedStart!, 'right_shoulder');
+      final startNose = getKeypoint(_capturedStart!, 'nose');
+      final liveLeftShoulder = getKeypoint(_keypoints!, 'left_shoulder');
+      final liveRightShoulder = getKeypoint(_keypoints!, 'right_shoulder');
+      final liveNose = getKeypoint(_keypoints!, 'nose');
+
+      if (startLeftShoulder == null ||
+          startRightShoulder == null ||
+          startNose == null ||
+          liveLeftShoulder == null ||
+          liveRightShoulder == null ||
+          liveNose == null) {
+        return null;
+      }
+
+      final startMidX =
+          (getX(startLeftShoulder) + getX(startRightShoulder)) / 2.0;
+      final startMidY =
+          (getY(startLeftShoulder) + getY(startRightShoulder)) / 2.0;
+      final liveMidX = (getX(liveLeftShoulder) + getX(liveRightShoulder)) / 2.0;
+      final liveMidY = (getY(liveLeftShoulder) + getY(liveRightShoulder)) / 2.0;
+
+      final startAngle = atan2(
+        getY(startNose) - startMidY,
+        getX(startNose) - startMidX,
+      );
+      final liveAngle = atan2(
+        getY(liveNose) - liveMidY,
+        getX(liveNose) - liveMidX,
+      );
+
+      double deltaRad = liveAngle - startAngle;
+      if (deltaRad > pi) deltaRad -= 2 * pi;
+      if (deltaRad < -pi) deltaRad += 2 * pi;
+
+      return (deltaRad * 180 / pi).abs();
+    }
+
+    if (widget.measurement == "Intermalleolar Distance") {
+      final startRightAnkle = getKeypoint(_capturedStart!, 'right_ankle');
+      final startLeftAnkle = getKeypoint(_capturedStart!, 'left_ankle');
+      final liveRightAnkle = getKeypoint(_keypoints!, 'right_ankle');
+      final liveLeftAnkle = getKeypoint(_keypoints!, 'left_ankle');
+
+      if (startRightAnkle == null ||
+          startLeftAnkle == null ||
+          liveRightAnkle == null ||
+          liveLeftAnkle == null) {
+        return null;
+      }
+
+      final startDistance = distance(startLeftAnkle, startRightAnkle);
+      final liveDistance = distance(liveRightAnkle, liveLeftAnkle);
+      return (liveDistance - startDistance).abs();
+    }
+
+    return null;
+  }
+
+  double _movementThreshold() {
+    if (widget.measurement == "Lateral Flexion") {
+      return 25;
+    }
+    if (widget.measurement == "Cervical Rotation") {
+      return 10;
+    }
+    if (widget.measurement == "Intermalleolar Distance") {
+      return 25;
+    }
+    return 20;
+  }
+
+  Future<void> _startCountdownAndCapture() async {
+    if (_countdownRunning) {
+      return;
+    }
+    _countdownRunning = true;
+
+    for (final v in [3, 2, 1]) {
+      if (!mounted) return;
+      setState(() {
+        _countdownValue = v;
+      });
+      await Future.delayed(const Duration(seconds: 1));
+
+      if (_stage == "positioning" && !_isReadyNow()) {
+        _countdownRunning = false;
+        setState(() {
+          _countdownValue = null;
+        });
+        return;
+      }
+
+      if (_stage == "capturedStart") {
+        final movement = _movementAmountFromStart();
+        if (movement == null || movement < _movementThreshold()) {
+          _countdownRunning = false;
+          setState(() {
+            _countdownValue = null;
+          });
+          return;
+        }
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _countdownValue = null;
+    });
+
+    _captureFrame();
+    _countdownRunning = false;
+  }
+
+  Future<void> _askForAnkleWidth() async {
+    final controller = TextEditingController(
+      text: _ankleWidthCm?.toStringAsFixed(1) ?? '',
+    );
+
+    final result = await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Enter ankle width (cm)"),
+        content: TextField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(hintText: "e.g. 5.0"),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () {
+              final val = double.tryParse(controller.text);
+              Navigator.pop(context, val);
+            },
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result > 0) {
+      setState(() {
+        _ankleWidthCm = result;
+        // _resultText =
+        // "Ankle width set: ${_ankleWidthCm!.toStringAsFixed(1)} cm";
+      });
+    }
+  }
+
+  void _handleAutoCapture() {
+    if (!_autoMode ||
+        _keypoints == null ||
+        _countdownRunning ||
+        _stage == "result") {
+      return;
+    }
+
+    if (_cmPerPixel == null && widget.measurement != "Cervical Rotation") {
+      return;
+    }
+
+    if (widget.measurement == "Intermalleolar Distance") {
+      final now = DateTime.now();
+
+      if (_isReadyNow()) {
+        _readySince ??= now;
+        final ms = now.difference(_readySince!).inMilliseconds;
+        if (ms >= 800) {
+          _readySince = null;
+          _startCountdownAndCapture();
+        }
+      } else {
+        _readySince = null;
+      }
+      return;
+    }
+
+    final now = DateTime.now();
+
+    if (_stage == "positioning") {
+      if (_isReadyNow()) {
+        _readySince ??= now;
+        final ms = now.difference(_readySince!).inMilliseconds;
+        if (ms >= 800) {
+          _readySince = null;
+          _startCountdownAndCapture();
+        }
+      } else {
+        _readySince = null;
+      }
+      return;
+    }
+
+    if (_stage == "capturedStart") {
+      final movement = _movementAmountFromStart();
+      if (movement != null && movement >= _movementThreshold()) {
+        _movementSince ??= now;
+        final ms = now.difference(_movementSince!).inMilliseconds;
+        if (ms >= 800) {
+          _movementSince = null;
+          _startCountdownAndCapture();
+        }
+      } else {
+        _movementSince = null;
+      }
+    }
+  }
+
+  void _askForDistance() async {
+    final controller = TextEditingController();
+    final RenderBox box =
+        _previewKey.currentContext!.findRenderObject() as RenderBox;
+
+    // final p1 = _screenToVideo(_calibPoint1!, box.size);
+    // final p2 = _screenToVideo(_calibPoint2!, box.size);
+    //
+    // final dx = p1.dx - p2.dx;
+    // final dy = p1.dy - p2.dy;
+    // final pxDist = sqrt(dx * dx + dy * dy);
+
+    final result = await showDialog<double>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Enter distance (cm)"),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(hintText: "e.g. 30"),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () {
+              final val = double.tryParse(controller.text);
+              Navigator.pop(context, val);
+            },
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && _calibPoint1 != null && _calibPoint2 != null) {
+      final p1 = _screenToVideo(_calibPoint1!, box.size);
+      final p2 = _screenToVideo(_calibPoint2!, box.size);
+
+      final dx = p1.dx - p2.dx;
+      final dy = p1.dy - p2.dy;
+      final pxDist = sqrt(dx * dx + dy * dy);
+
+      setState(() {
+        _cmPerPixel = result / pxDist;
+        _isCalibrating = false;
+        _calibPoint1 = null;
+        _calibPoint2 = null;
+        // _resultText = "Calibrated: ${_cmPerPixel!.toStringAsFixed(4)} cm/px";
+      });
+    }
+  }
+
+  double _pxToCm(double px) {
+    if (_cmPerPixel == null) {
+      throw Exception("Calibration Failed");
+    }
+    return px * _cmPerPixel!;
+  }
+
+  Offset _screenToVideo(Offset screen, Size size) {
+    final vw = _videoW!.toDouble();
+    final vh = _videoH!.toDouble();
+
+    final cw = size.width;
+    final ch = size.height;
+
+    final videoAspect = vw / vh;
+    final canvasAspect = cw / ch;
+
+    double scale, offsetX, offsetY;
+
+    if (canvasAspect > videoAspect) {
+      final displayedW = ch * videoAspect;
+      scale = displayedW / vw;
+      offsetX = (cw - displayedW) / 2;
+      offsetY = 0;
+    } else {
+      final displayedH = cw / videoAspect;
+      scale = displayedH / vh;
+      offsetX = 0;
+      offsetY = (ch - displayedH) / 2;
+    }
+
+    final mirroredX = size.width - screen.dx;
+    final x = (mirroredX - offsetX) / scale;
+    // final x = (screen.dx - offsetX) / scale;
+    final y = (screen.dy - offsetY) / scale;
+
+    return Offset(x, y);
+  }
+
   @override
   Widget build(BuildContext context) {
     final guidanceState = _guidanceState();
@@ -506,114 +894,271 @@ class _CameraScreenState extends State<CameraScreen> {
       appBar: AppBar(title: Text('Measure: ${widget.measurement}')),
       body: Center(
         child: _initialized && _controller != null
-            ? Stack(
-                // mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  AspectRatio(
-                    aspectRatio: _controller!.value.aspectRatio,
-                    child: CameraPreview(_controller!),
-                  ),
+            ? GestureDetector(
+                key: _previewKey,
+                onTapDown: (details) {
+                  if (!_isCalibrating || _videoW == null || _videoH == null) {
+                    return;
+                  }
 
-                  Positioned(
-                    top: 20,
-                    right: 20,
-                    child: Row(
-                      children: [
-                        const Text(
-                          "Guidance",
-                          style: TextStyle(color: Colors.white),
-                        ),
-                        Switch(
-                          value: _guidanceOn,
-                          onChanged: (val) {
-                            setState(() {
-                              _guidanceOn = val;
-                            });
-                          },
-                        ),
-                      ],
+                  final box =
+                      _previewKey.currentContext!.findRenderObject()
+                          as RenderBox;
+                  final local = box.globalToLocal(details.globalPosition);
+                  // final box = context.findRenderObject() as RenderBox;
+                  // final local = box.globalToLocal(details.globalPosition);
+
+                  // final scaleX = _videoW!.toDouble() / box.size.width;
+                  // final scaleY = _videoH!.toDouble() / box.size.height;
+                  //
+                  // final videoPoint = Offset(
+                  //   local.dx * scaleX,
+                  //   local.dy * scaleY,
+                  // );
+
+                  // final videoPoint = _screenToVideo(local, box.size);
+
+                  setState(() {
+                    if (_calibPoint1 == null) {
+                      _calibPoint1 = local; //local -> videoPoint
+                    } else {
+                      _calibPoint2 = local;
+                    }
+                  });
+
+                  if (_calibPoint1 != null && _calibPoint2 != null) {
+                    _askForDistance();
+                  }
+                },
+                child: Stack(
+                  children: [
+                    AspectRatio(
+                      aspectRatio: _controller!.value.aspectRatio,
+                      child: CameraPreview(_controller!),
                     ),
-                  ),
 
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: CustomPaint(
-                        painter: GuideOverlayPainter(
-                          keypoints: _keypoints,
-                          videoW: _videoW,
-                          videoH: _videoH, //issue here?
-                          guidanceOn: _guidanceOn,
-                          isReady: guidanceState.isReady,
-                          guideLines: guidanceState.lines,
-                        ),
+                    Positioned(
+                      top: 20,
+                      right: 20,
+                      child: Row(
+                        children: [
+                          const Text(
+                            "Guidance",
+                            style: TextStyle(color: Colors.white),
+                          ),
+                          Switch(
+                            value: _guidanceOn,
+                            onChanged: (val) {
+                              setState(() {
+                                _guidanceOn = val;
+                              });
+                            },
+                          ),
+                        ],
                       ),
                     ),
-                  ),
 
-                  Positioned(
-                    bottom: 24,
-                    left: 0,
-                    right: 0,
-                    child: Text(
-                      _instructionText(),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-
-                  Positioned(
-                    bottom: 140,
-                    left: 0,
-                    right: 0,
-                    child: Text(
-                      _resultText,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-
-                  Positioned(
-                    bottom: 80,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: ElevatedButton(
-                        onPressed: _captureFrame,
-                        child: Text(
-                          _stage == "positioning"
-                              ? "Capture Start"
-                              : "Capture End",
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: GuideOverlayPainter(
+                            keypoints: _keypoints,
+                            videoW: _videoW,
+                            videoH: _videoH, //issue here?
+                            guidanceOn: _guidanceOn,
+                            isReady: guidanceState.isReady,
+                            guideLines: guidanceState.lines,
+                            calibPoint1: _calibPoint1,
+                            calibPoint2: _calibPoint2,
+                          ),
                         ),
                       ),
                     ),
-                  ),
 
-                  Positioned(
-                    bottom: 20,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: ElevatedButton(
-                        onPressed: _reset,
-                        child: const Text("Reset"),
+                    Positioned(
+                      bottom: 24,
+                      left: 0,
+                      right: 0,
+                      child: Text(
+                        _instructionText(),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.yellow,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
-                  ),
 
-                  // const SizedBox(height: 16),
-                  // ElevatedButton(
-                  //   onPressed: _captureFrame,
-                  //   child: const Text('Capture'),
-                  // ),
-                ],
+                    Positioned(
+                      bottom: 140,
+                      left: 0,
+                      right: 0,
+                      child: Text(
+                        _resultText,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.yellow,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+
+                    Positioned(
+                      left: 16,
+                      top: 100,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+                                _isCalibrating = true;
+                                _calibPoint1 = null;
+                                _calibPoint2 = null;
+                                _resultText =
+                                    "Click two points a known distance apart and enter distance.";
+                              });
+                            },
+                            child: Text(
+                              _cmPerPixel == null
+                                  ? "Calibration: Not Set"
+                                  : "Calibration: ${_cmPerPixel!.toStringAsFixed(2)} cm/px",
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+
+                          if (widget.measurement == "Intermalleolar Distance")
+                            ElevatedButton(
+                              onPressed: _askForAnkleWidth,
+                              child: Text(
+                                _ankleWidthCm == null
+                                    ? "Ankle Width: Not Set"
+                                    : "Ankle Width: ${_ankleWidthCm} cm",
+                              ),
+                            ),
+                          const SizedBox(height: 10),
+
+                          // ElevatedButton(
+                          //   onPressed: _isReadyNow() ? _captureFrame : null,
+                          //   child: Text(
+                          //     _stage == "positioning"
+                          //         ? "Capture Start"
+                          //         : "Capture End",
+                          //   ),
+                          // ),
+                          // const SizedBox(height: 10),
+                          ElevatedButton(
+                            onPressed: _reset,
+                            child: const Text("Reset"),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Capture Button
+                    // Positioned(
+                    //   bottom: 80,
+                    //   left: 0,
+                    //   right: 0,
+                    //   child: Center(
+                    //     child: ElevatedButton(
+                    //       onPressed: _captureFrame,
+                    //       child: Text(
+                    //         _stage == "positioning"
+                    //             ? "Capture Start"
+                    //             : "Capture End",
+                    //       ),
+                    //     ),
+                    //   ),
+                    // ),
+
+                    // Reset Button
+                    // Positioned(
+                    //   bottom: 20,
+                    //   left: 0,
+                    //   right: 0,
+                    //   child: Center(
+                    //     child: ElevatedButton(
+                    //       onPressed: _reset,
+                    //       child: const Text("Reset"),
+                    //     ),
+                    //   ),
+                    // ),
+
+                    // Calibrate Button
+                    // Positioned(
+                    //   bottom: 180,
+                    //   left: 0,
+                    //   right: 0,
+                    //   child: Center(
+                    //     child: ElevatedButton(
+                    //       onPressed: () {
+                    //         setState(() {
+                    //           _isCalibrating = true;
+                    //           _calibPoint1 = null;
+                    //           _calibPoint2 = null;
+                    //           _resultText =
+                    //               "Click two points a known distance apart and enter distance";
+                    //         });
+                    //       },
+                    //       child: const Text("Calibrate"),
+                    //     ),
+                    //   ),
+                    // ),
+
+                    // Ankle Measure Button
+                    // if (widget.measurement == "Intermalleolar Distance")
+                    //   Positioned(
+                    //     bottom: 230,
+                    //     left: 0,
+                    //     right: 0,
+                    //     child: Center(
+                    //       child: ElevatedButton(
+                    //         onPressed: _askForAnkleWidth,
+                    //         child: const Text("Set ankle width"),
+                    //       ),
+                    //     ),
+                    //   ),
+                    if (_countdownValue != null)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: Center(
+                            child: Text(
+                              _countdownValue.toString(),
+                              style: const TextStyle(
+                                color: Colors.yellow,
+                                fontSize: 72,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    // if (_countdownValue != null)
+                    //   Positioned(
+                    //     top: 100,
+                    //     left: 0,
+                    //     right: 0,
+                    //     child: Text(
+                    //       _countdownValue.toString(),
+                    //       textAlign: TextAlign.center,
+                    //       style: const TextStyle(
+                    //         color: Colors.yellow,
+                    //         fontSize: 64,
+                    //         fontWeight: FontWeight.bold,
+                    //       ),
+                    //     ),
+                    //   ),
+
+                    // const SizedBox(height: 16),
+                    // ElevatedButton(
+                    //   onPressed: _captureFrame,
+                    //   child: const Text('Capture'),
+                    // ),
+                  ],
+                ),
               )
             : const CircularProgressIndicator(),
       ),
@@ -628,6 +1173,8 @@ class GuideOverlayPainter extends CustomPainter {
   final bool guidanceOn;
   final bool isReady;
   final List<GuideLine> guideLines;
+  final Offset? calibPoint1;
+  final Offset? calibPoint2;
 
   GuideOverlayPainter({
     this.keypoints,
@@ -636,12 +1183,16 @@ class GuideOverlayPainter extends CustomPainter {
     required this.guidanceOn,
     required this.isReady,
     required this.guideLines,
+    required this.calibPoint1,
+    required this.calibPoint2,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     // Box frame
-    if (!guidanceOn) return;
+    if (!guidanceOn) {
+      return;
+    }
 
     final paint = Paint()
       // ..color = Colors.white.withOpacity(0.7)
@@ -657,8 +1208,33 @@ class GuideOverlayPainter extends CustomPainter {
 
     canvas.drawRect(rect, paint);
 
-    if (keypoints == null || videoW == null || videoH == null) return;
-    if (videoW == 0 || videoH == 0) return;
+    if (keypoints == null || videoW == null || videoH == null) {
+      return;
+    }
+    if (videoW == 0 || videoH == 0) {
+      return;
+    }
+
+    final dotPaint = Paint()
+      ..color = Colors.red
+      ..style = PaintingStyle.fill;
+
+    if (calibPoint1 != null) {
+      canvas.drawCircle(calibPoint1!, 6, dotPaint);
+    }
+
+    if (calibPoint2 != null) {
+      canvas.drawCircle(calibPoint2!, 6, dotPaint);
+
+      if (calibPoint1 != null) {
+        final linePaint = Paint()
+          ..color = Colors.yellow
+          ..strokeWidth = 3
+          ..style = PaintingStyle.stroke;
+
+        canvas.drawLine(calibPoint1!, calibPoint2!, linePaint);
+      }
+    }
 
     // final dotPaint = Paint()..style = PaintingStyle.fill;
 
@@ -685,10 +1261,6 @@ class GuideOverlayPainter extends CustomPainter {
       offsetY = (ch - displayedH) / 2;
     }
 
-    final dotPaint = Paint()
-      ..color = Colors.red
-      ..style = PaintingStyle.fill;
-
     for (final kp in keypoints!) {
       final score = (js_util.getProperty(kp, 'score') as num).toDouble();
       if (score < 0.4) continue;
@@ -705,10 +1277,14 @@ class GuideOverlayPainter extends CustomPainter {
     }
 
     Offset? mapKeypointToCanvas(String name) {
-      if (keypoints == null) return null;
+      if (keypoints == null) {
+        return null;
+      }
 
       final kp = getKeypoint(keypoints!, name);
-      if (kp == null || !hasGoodScore(kp)) return null;
+      if (kp == null || !hasGoodScore(kp)) {
+        return null;
+      }
 
       final x = getX(kp);
       final y = getY(kp);
@@ -808,7 +1384,9 @@ double getScore(dynamic kp) =>
     (js_util.getProperty(kp, 'score') as num).toDouble();
 
 bool hasGoodScore(dynamic kp, [double threshold = 0.4]) {
-  if (kp == null) return false;
+  if (kp == null) {
+    return false;
+  }
   return getScore(kp) >= threshold;
 }
 
@@ -822,7 +1400,9 @@ double angleBetweenPoints(dynamic a, dynamic b, dynamic c) {
   final mag1 = sqrt(abX * abX + abY * abY);
   final mag2 = sqrt(cbX * cbX + cbY * cbY);
 
-  if (mag1 == 0 || mag2 == 0) return 0;
+  if (mag1 == 0 || mag2 == 0) {
+    return 0;
+  }
 
   final cosTheta = (dot / (mag1 * mag2)).clamp(-1.0, 1.0);
   return acos(cosTheta) * 180 / pi;
