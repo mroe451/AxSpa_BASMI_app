@@ -86,10 +86,14 @@ class _BasmiMenuState extends State<BasmiMenu> {
   }
 
   double? _extractNumber(String? text) {
-    if (text == null) return null;
+    if (text == null) {
+      return null;
+    }
 
     final match = RegExp(r'[-+]?\d*\.?\d+').firstMatch(text);
-    if (match == null) return null;
+    if (match == null) {
+      return null;
+    }
 
     return double.tryParse(match.group(0)!);
   }
