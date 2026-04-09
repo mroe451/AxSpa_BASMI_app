@@ -42,6 +42,8 @@ class _CameraScreenState extends State<CameraScreen> {
   double? _cmPerPixel;
   final GlobalKey _previewKey = GlobalKey();
   double? _ankleWidthCm;
+  static const primaryColor = Color(0xFF4FF6F5);
+  static const backgroundColor = Color(0xFFF8FAFC);
 
   @override
   void initState() {
@@ -123,6 +125,9 @@ class _CameraScreenState extends State<CameraScreen> {
       _stage = "positioning";
       _resultText = "";
       _countdownValue = null;
+      _isCalibrating = false;
+      _calibPoint1 = null;
+      _calibPoint2 = null;
     });
     _readySince = null;
     _movementSince = null;
@@ -166,7 +171,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_ankleWidthCm != null) {
       _setAndSaveResult(
         "Intermalleolar: ${correctedCm.toStringAsFixed(1)} cm "
-        "(raw: ${approxCm.toStringAsFixed(1)} cm",
+        "(raw: ${approxCm.toStringAsFixed(1)} cm)",
       );
     } else {
       _setAndSaveResult("Distance: ${approxCm.toStringAsFixed(1)} cm");
@@ -252,6 +257,14 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   String _instructionText() {
+    if (_isCalibrating) {
+      return "Click two points a known distance apart";
+    }
+
+    if (_stage == "result") {
+      return "Measurement complete. Press reset to repeat";
+    }
+
     if (widget.measurement == "Intermalleolar Distance") {
       // return _stage == "positioning"
       //     ? "Stand facing the camera and capture your starting position"
@@ -259,14 +272,14 @@ class _CameraScreenState extends State<CameraScreen> {
       return "Stand facing the camera with feet apart and hold still for capture";
     } else if (widget.measurement == "Lateral Flexion") {
       return _stage == "positioning"
-          ? "Stand upright and capture your neutral posture"
-          : "Bend sideways and capture the final position";
+          ? "Stand upright and hold still for automatic capture"
+          : "Bend sideways and hold still for automatic capture";
     } else if (widget.measurement == "Cervical Rotation") {
       return _stage == "positioning"
-          ? "Face forward and capture your neutral head position"
-          : "Rotate your head and capture the final position";
+          ? "Face forward and hold still for automatic capture"
+          : "Rotate your head and hold still for automatic capture";
     }
-    return "Stand inside the box and press capture";
+    return "Hold still for automatic capture";
   }
 
   void _startPoseLoop() async {
@@ -700,7 +713,7 @@ class _CameraScreenState extends State<CameraScreen> {
       text: _ankleWidthCm?.toStringAsFixed(1) ?? '',
     );
 
-    final result = await showDialog(
+    final result = await showDialog<double>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("Enter ankle width (cm)"),
@@ -749,8 +762,11 @@ class _CameraScreenState extends State<CameraScreen> {
     if (widget.measurement == "Intermalleolar Distance") {
       final now = DateTime.now();
 
-      if (_isReadyNow()) {
+      if (_isReadyNow() && _resultText != "Hold still...") {
         _readySince ??= now;
+        setState(() {
+          _resultText = "Hold still...";
+        });
         final ms = now.difference(_readySince!).inMilliseconds;
         if (ms >= 800) {
           _readySince = null;
@@ -780,8 +796,13 @@ class _CameraScreenState extends State<CameraScreen> {
 
     if (_stage == "capturedStart") {
       final movement = _movementAmountFromStart();
-      if (movement != null && movement >= _movementThreshold()) {
+      if (movement != null &&
+          movement >= _movementThreshold() &&
+          _resultText != "Hold still...") {
         _movementSince ??= now;
+        setState(() {
+          _resultText = "Hold still...";
+        });
         final ms = now.difference(_movementSince!).inMilliseconds;
         if (ms >= 800) {
           _movementSince = null;
@@ -891,7 +912,11 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     final guidanceState = _guidanceState();
     return Scaffold(
-      appBar: AppBar(title: Text('Measure: ${widget.measurement}')),
+      backgroundColor: backgroundColor,
+      appBar: AppBar(
+        title: Text('Measuring: ${widget.measurement}'),
+        backgroundColor: backgroundColor,
+      ),
       body: Center(
         child: _initialized && _controller != null
             ? GestureDetector(
@@ -905,22 +930,12 @@ class _CameraScreenState extends State<CameraScreen> {
                       _previewKey.currentContext!.findRenderObject()
                           as RenderBox;
                   final local = box.globalToLocal(details.globalPosition);
-                  // final box = context.findRenderObject() as RenderBox;
-                  // final local = box.globalToLocal(details.globalPosition);
-
-                  // final scaleX = _videoW!.toDouble() / box.size.width;
-                  // final scaleY = _videoH!.toDouble() / box.size.height;
-                  //
-                  // final videoPoint = Offset(
-                  //   local.dx * scaleX,
-                  //   local.dy * scaleY,
-                  // );
-
-                  // final videoPoint = _screenToVideo(local, box.size);
 
                   setState(() {
                     if (_calibPoint1 == null) {
                       _calibPoint1 = local; //local -> videoPoint
+                      _resultText =
+                          "First point selected, Click the second point.";
                     } else {
                       _calibPoint2 = local;
                     }
@@ -937,34 +952,13 @@ class _CameraScreenState extends State<CameraScreen> {
                       child: CameraPreview(_controller!),
                     ),
 
-                    Positioned(
-                      top: 20,
-                      right: 20,
-                      child: Row(
-                        children: [
-                          const Text(
-                            "Guidance",
-                            style: TextStyle(color: Colors.white),
-                          ),
-                          Switch(
-                            value: _guidanceOn,
-                            onChanged: (val) {
-                              setState(() {
-                                _guidanceOn = val;
-                              });
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-
                     Positioned.fill(
                       child: IgnorePointer(
                         child: CustomPaint(
                           painter: GuideOverlayPainter(
                             keypoints: _keypoints,
                             videoW: _videoW,
-                            videoH: _videoH, //issue here?
+                            videoH: _videoH,
                             guidanceOn: _guidanceOn,
                             isReady: guidanceState.isReady,
                             guideLines: guidanceState.lines,
@@ -975,152 +969,197 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
 
+                    /// INSTRUCTION TEXT WIDGET
                     Positioned(
-                      bottom: 24,
-                      left: 0,
-                      right: 0,
-                      child: Text(
-                        _instructionText(),
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.yellow,
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
+                      bottom: 20,
+                      left: 13,
+                      right: 13,
+                      child: Container(
+                        width: 300,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: primaryColor.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Text(
+                          _instructionText(),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                     ),
 
-                    Positioned(
-                      bottom: 140,
-                      left: 0,
-                      right: 0,
-                      child: Text(
-                        _resultText,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.yellow,
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-
-                    Positioned(
-                      left: 16,
-                      top: 100,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          ElevatedButton(
-                            onPressed: () {
-                              setState(() {
-                                _isCalibrating = true;
-                                _calibPoint1 = null;
-                                _calibPoint2 = null;
-                                _resultText =
-                                    "Click two points a known distance apart and enter distance.";
-                              });
-                            },
-                            child: Text(
-                              _cmPerPixel == null
-                                  ? "Calibration: Not Set"
-                                  : "Calibration: ${_cmPerPixel!.toStringAsFixed(2)} cm/px",
+                    /// RESULT TEXT WIDGET
+                    if (_resultText.isNotEmpty)
+                      Positioned(
+                        bottom: 20,
+                        left: 13,
+                        right: 13,
+                        child: Container(
+                          width: 300,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            color: primaryColor.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Text(
+                            _resultText,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
-                          const SizedBox(height: 10),
+                        ),
+                      ),
 
-                          if (widget.measurement == "Intermalleolar Distance")
+                    /// CONTROL PANEL
+                    /// Includes Calibration, Ankle Width, Reset Button and Guidance Switch
+                    Positioned(
+                      left: 13,
+                      top: 92,
+                      child: Container(
+                        width: 200,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: primaryColor.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.12),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            /// CALIBRATION BUTTON
+                            /// Doesn't show if measuring Cervical Rotation
+                            if (widget.measurement != "Cervical Rotation")
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _cmPerPixel == null
+                                      ? Colors.grey[700]
+                                      : primaryColor,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
+                                ),
+                                onPressed: () {
+                                  setState(() {
+                                    _isCalibrating = true;
+                                    _calibPoint1 = null;
+                                    _calibPoint2 = null;
+                                    _resultText =
+                                        "Click two points a known distance apart and enter distance.";
+                                  });
+                                },
+                                child: Text(
+                                  _cmPerPixel == null
+                                      ? "Calibration: Not Set"
+                                      : "Calibration: ${_cmPerPixel!.toStringAsFixed(2)}",
+                                ),
+                              ),
+                            if (widget.measurement != "Cervical Rotation")
+                              const SizedBox(height: 10),
+
+                            /// ANKLE WIDTH BUTTON
+                            /// Only shows when measuring Intermalleolar Distance
+                            if (widget.measurement == "Intermalleolar Distance")
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _ankleWidthCm == null
+                                      ? Colors.grey[700]
+                                      : primaryColor,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
+                                ),
+                                onPressed: _askForAnkleWidth,
+                                child: Text(
+                                  _ankleWidthCm == null
+                                      ? "Ankle Width: Not Set"
+                                      : "Ankle Width: ${_ankleWidthCm!.toStringAsFixed(1)} cm",
+                                ),
+                              ),
+                            if (widget.measurement == "Intermalleolar Distance")
+                              const SizedBox(height: 10),
+
+                            /// MANUAL MEASUREMENT BUTTON
+                            /// Removed as not needed as now automated
+                            // ElevatedButton(
+                            //   onPressed: _isReadyNow() ? _captureFrame : null,
+                            //   child: Text(
+                            //     _stage == "positioning"
+                            //         ? "Capture Start"
+                            //         : "Capture End",
+                            //   ),
+                            // ),
+                            // const SizedBox(height: 10),
+
+                            /// RESET BUTTON
                             ElevatedButton(
-                              onPressed: _askForAnkleWidth,
-                              child: Text(
-                                _ankleWidthCm == null
-                                    ? "Ankle Width: Not Set"
-                                    : "Ankle Width: ${_ankleWidthCm} cm",
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 14,
+                                ),
+                              ),
+                              onPressed: _reset,
+                              child: const Text("Reset"),
+                            ),
+                            const SizedBox(height: 10),
+
+                            /// GUIDANCE OVERLAY SWITCH
+                            /// Kinda redundant now
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text(
+                                    "Guidance",
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                  Switch(
+                                    value: _guidanceOn,
+                                    activeColor: primaryColor,
+                                    onChanged: (val) {
+                                      setState(() {
+                                        _guidanceOn = val;
+                                      });
+                                    },
+                                  ),
+                                ],
                               ),
                             ),
-                          const SizedBox(height: 10),
-
-                          // ElevatedButton(
-                          //   onPressed: _isReadyNow() ? _captureFrame : null,
-                          //   child: Text(
-                          //     _stage == "positioning"
-                          //         ? "Capture Start"
-                          //         : "Capture End",
-                          //   ),
-                          // ),
-                          // const SizedBox(height: 10),
-                          ElevatedButton(
-                            onPressed: _reset,
-                            child: const Text("Reset"),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
 
-                    // Capture Button
-                    // Positioned(
-                    //   bottom: 80,
-                    //   left: 0,
-                    //   right: 0,
-                    //   child: Center(
-                    //     child: ElevatedButton(
-                    //       onPressed: _captureFrame,
-                    //       child: Text(
-                    //         _stage == "positioning"
-                    //             ? "Capture Start"
-                    //             : "Capture End",
-                    //       ),
-                    //     ),
-                    //   ),
-                    // ),
-
-                    // Reset Button
-                    // Positioned(
-                    //   bottom: 20,
-                    //   left: 0,
-                    //   right: 0,
-                    //   child: Center(
-                    //     child: ElevatedButton(
-                    //       onPressed: _reset,
-                    //       child: const Text("Reset"),
-                    //     ),
-                    //   ),
-                    // ),
-
-                    // Calibrate Button
-                    // Positioned(
-                    //   bottom: 180,
-                    //   left: 0,
-                    //   right: 0,
-                    //   child: Center(
-                    //     child: ElevatedButton(
-                    //       onPressed: () {
-                    //         setState(() {
-                    //           _isCalibrating = true;
-                    //           _calibPoint1 = null;
-                    //           _calibPoint2 = null;
-                    //           _resultText =
-                    //               "Click two points a known distance apart and enter distance";
-                    //         });
-                    //       },
-                    //       child: const Text("Calibrate"),
-                    //     ),
-                    //   ),
-                    // ),
-
-                    // Ankle Measure Button
-                    // if (widget.measurement == "Intermalleolar Distance")
-                    //   Positioned(
-                    //     bottom: 230,
-                    //     left: 0,
-                    //     right: 0,
-                    //     child: Center(
-                    //       child: ElevatedButton(
-                    //         onPressed: _askForAnkleWidth,
-                    //         child: const Text("Set ankle width"),
-                    //       ),
-                    //     ),
-                    //   ),
+                    /// COUNTDOWN
+                    /// Displays 3 2 1 on screen
                     if (_countdownValue != null)
                       Positioned.fill(
                         child: IgnorePointer(
@@ -1128,7 +1167,7 @@ class _CameraScreenState extends State<CameraScreen> {
                             child: Text(
                               _countdownValue.toString(),
                               style: const TextStyle(
-                                color: Colors.yellow,
+                                color: primaryColor,
                                 fontSize: 72,
                                 fontWeight: FontWeight.bold,
                               ),
@@ -1136,27 +1175,6 @@ class _CameraScreenState extends State<CameraScreen> {
                           ),
                         ),
                       ),
-                    // if (_countdownValue != null)
-                    //   Positioned(
-                    //     top: 100,
-                    //     left: 0,
-                    //     right: 0,
-                    //     child: Text(
-                    //       _countdownValue.toString(),
-                    //       textAlign: TextAlign.center,
-                    //       style: const TextStyle(
-                    //         color: Colors.yellow,
-                    //         fontSize: 64,
-                    //         fontWeight: FontWeight.bold,
-                    //       ),
-                    //     ),
-                    //   ),
-
-                    // const SizedBox(height: 16),
-                    // ElevatedButton(
-                    //   onPressed: _captureFrame,
-                    //   child: const Text('Capture'),
-                    // ),
                   ],
                 ),
               )
@@ -1175,6 +1193,7 @@ class GuideOverlayPainter extends CustomPainter {
   final List<GuideLine> guideLines;
   final Offset? calibPoint1;
   final Offset? calibPoint2;
+  static const primaryColor = Color(0xFF4FF6F5);
 
   GuideOverlayPainter({
     this.keypoints,
@@ -1220,15 +1239,15 @@ class GuideOverlayPainter extends CustomPainter {
       ..style = PaintingStyle.fill;
 
     if (calibPoint1 != null) {
-      canvas.drawCircle(calibPoint1!, 6, dotPaint);
+      canvas.drawCircle(calibPoint1!, 4, dotPaint);
     }
 
     if (calibPoint2 != null) {
-      canvas.drawCircle(calibPoint2!, 6, dotPaint);
+      canvas.drawCircle(calibPoint2!, 4, dotPaint);
 
       if (calibPoint1 != null) {
         final linePaint = Paint()
-          ..color = Colors.yellow
+          ..color = primaryColor
           ..strokeWidth = 3
           ..style = PaintingStyle.stroke;
 

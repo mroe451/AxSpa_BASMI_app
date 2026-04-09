@@ -1,15 +1,3 @@
-// @JS()
-// library pose_service;
-//
-// import 'dart:js_util';
-// import 'package:js/js.dart';
-//
-// @JS('initPose')
-// external Future<void> initPose();
-//
-// @JS('detectPose')
-// external Future<dynamic> detectPose(dynamic videoElement);
-
 @JS()
 library pose_service;
 
