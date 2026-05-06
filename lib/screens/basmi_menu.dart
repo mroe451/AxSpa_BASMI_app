@@ -11,7 +11,7 @@ class BasmiMenu extends StatefulWidget {
 class _BasmiMenuState extends State<BasmiMenu> {
   final List<String> measurements = const [
     'Cervical Rotation',
-    'Lateral Flexion',
+    'Lumbar Side Flexion',
     // 'Lumbar Flexion',
     'Intermalleolar Distance',
     // 'Tragus-to-Wall Distance',
@@ -46,7 +46,7 @@ class _BasmiMenuState extends State<BasmiMenu> {
 
   void _calculateBasmiScore() {
     final cervicalRaw = _extractNumber(recordedResults['Cervical Rotation']);
-    final lateralRaw = _extractNumber(recordedResults['Lateral Flexion']);
+    final lateralRaw = _extractNumber(recordedResults['Lumbar Side Flexion']);
     final intermalleolarRaw = _extractNumber(
       recordedResults['Intermalleolar Distance'],
     );
@@ -85,13 +85,14 @@ class _BasmiMenuState extends State<BasmiMenu> {
           "BASMI Score: ${basmi.toStringAsFixed(2)}\n"
           "Component scores - "
           "Cervical: $cervicalScore, "
-          "Lateral: $lateralScore, "
+          "Lumbar Side: $lateralScore, "
           "Lumbar: $lumbarScore, "
           "Intermalleolar: $intermalleolarScore, "
           "Tragus-to-Wall: $tragusScore";
     });
   }
 
+  /// Parses manual measurements
   double? _extractNumber(String? text) {
     if (text == null) {
       return null;
@@ -105,6 +106,7 @@ class _BasmiMenuState extends State<BasmiMenu> {
     return double.tryParse(match.group(0)!);
   }
 
+  /// BASMI Banding for computing BASMI score
   int _scoreCervicalRotation(double value) {
     if (value >= 85) return 0;
     if (value >= 76.6) return 1;
@@ -357,11 +359,12 @@ class _BasmiMenuState extends State<BasmiMenu> {
     return Scaffold(
       backgroundColor: backgroundColor,
       appBar: AppBar(
+        backgroundColor: backgroundColor,
         title: const Text(
           'BASMI Assessment',
           style: TextStyle(fontWeight: FontWeight.w600),
         ),
-        backgroundColor: backgroundColor,
+        // backgroundColor: backgroundColor,
         elevation: 0,
         foregroundColor: textColor,
       ),
@@ -390,6 +393,7 @@ class _BasmiMenuState extends State<BasmiMenu> {
                 ),
                 const SizedBox(height: 18),
 
+                ///Text box for inputting manual measurements
                 _manualInputField(
                   label: "Lumbar Flexion (cm)",
                   controller: lumbarFlexionController,
@@ -402,6 +406,7 @@ class _BasmiMenuState extends State<BasmiMenu> {
 
                 SizedBox(height: 10),
 
+                /// Calculate BASMI score button
                 SizedBox(
                   height: 52,
                   child: ElevatedButton(
@@ -426,6 +431,7 @@ class _BasmiMenuState extends State<BasmiMenu> {
 
                 const SizedBox(height: 18),
 
+                /// Final BASAMI score output
                 _resultCard(),
               ],
             ),
@@ -434,97 +440,4 @@ class _BasmiMenuState extends State<BasmiMenu> {
       ),
     );
   }
-
-  // Widget build(BuildContext context) {
-  //   return Scaffold(
-  //     appBar: AppBar(title: const Text('Select Measurement')),
-  //     body: ListView(
-  //       padding: const EdgeInsets.all(8),
-  //       children: [
-  //         ...measurements.map((measurement) {
-  //           final saved = recordedResults[measurement];
-  //           //   }
-  //           //   )
-  //           // ],
-  //           // itemCount: measurements.length,
-  //           // itemBuilder: (context, index) {
-  //           //   final measurement = measurements[index];
-  //           //   final saved = recordedResults[measurement];
-  //
-  //           return Padding(
-  //             padding: const EdgeInsets.only(bottom: 8.0),
-  //             child: ElevatedButton(
-  //               onPressed: () {
-  //                 Navigator.push(
-  //                   context,
-  //                   MaterialPageRoute(
-  //                     builder: (_) => CameraScreen(
-  //                       measurement: measurement,
-  //                       onMeasurementSaved: _saveMeasurement,
-  //                     ),
-  //                   ),
-  //                 );
-  //               },
-  //
-  //               child: Padding(
-  //                 padding: const EdgeInsets.symmetric(vertical: 16.0),
-  //                 child: Column(
-  //                   crossAxisAlignment: CrossAxisAlignment.start,
-  //                   children: [
-  //                     Text(measurement, style: const TextStyle(fontSize: 18)),
-  //                     if (saved != null) ...[
-  //                       const SizedBox(height: 6),
-  //                       Text(
-  //                         "Saved result: $saved",
-  //                         style: const TextStyle(fontSize: 14),
-  //                       ),
-  //                     ],
-  //                   ],
-  //                 ),
-  //               ),
-  //             ),
-  //           );
-  //         }).toList(),
-  //
-  //         const SizedBox(height: 20),
-  //         const Text(
-  //           "Enter Remaining Measurements",
-  //           style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-  //         ),
-  //         const SizedBox(height: 12),
-  //
-  //         TextField(
-  //           controller: lumbarFlexionController,
-  //           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-  //           decoration: const InputDecoration(
-  //             labelText: "Lumbar Flexion (cm)",
-  //             border: OutlineInputBorder(),
-  //           ),
-  //         ),
-  //         const SizedBox(height: 12),
-  //
-  //         TextField(
-  //           controller: tragusWallController,
-  //           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-  //           decoration: const InputDecoration(
-  //             labelText: "Tragus-to-Wall Distance (cm)",
-  //             border: OutlineInputBorder(),
-  //           ),
-  //         ),
-  //         const SizedBox(height: 16),
-  //
-  //         ElevatedButton(
-  //           onPressed: _calculateBasmiScore,
-  //           child: const Text("Calculate BASMI Score"),
-  //         ),
-  //         const SizedBox(height: 16),
-  //
-  //         Text(
-  //           basmiScoreResult,
-  //           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-  //         ),
-  //       ],
-  //     ),
-  //   );
-  // }
 }

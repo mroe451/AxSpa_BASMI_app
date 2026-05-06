@@ -29,7 +29,7 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _guidanceOn = true;
   int? _videoW;
   int? _videoH;
-  String _stage = "positioning";
+  String _stage = "cameraSetup";
   String _resultText = "";
   bool _autoMode = true;
   int? _countdownValue;
@@ -37,6 +37,7 @@ class _CameraScreenState extends State<CameraScreen> {
   DateTime? _movementSince;
   bool _countdownRunning = false;
   bool _isCalibrating = false;
+  bool _awaitingAnkleWidthAfterCalib = false;
   Offset? _calibPoint1;
   Offset? _calibPoint2;
   double? _cmPerPixel;
@@ -78,12 +79,8 @@ class _CameraScreenState extends State<CameraScreen> {
     super.dispose();
   }
 
+  /// captures current keypoints from camera for calculation
   void _captureFrame() {
-    // // ADD MEASUREMENT CALCULATION / pose estimation here
-    // ScaffoldMessenger.of(
-    //   context,
-    // ).showSnackBar(SnackBar(content: Text('${widget.measurement} captured!')));
-
     if (_keypoints == null) {
       return;
     }
@@ -105,7 +102,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
       setState(() {
         _stage = "capturedStart";
-        _resultText = "Start captured. Move into position.";
+        _resultText = "";
       });
     } else if (_stage == "capturedStart") {
       _capturedEnd = snapshot;
@@ -122,28 +119,31 @@ class _CameraScreenState extends State<CameraScreen> {
     setState(() {
       _capturedStart = null;
       _capturedEnd = null;
-      _stage = "positioning";
+      _stage = "cameraSetup";
       _resultText = "";
       _countdownValue = null;
       _isCalibrating = false;
       _calibPoint1 = null;
       _calibPoint2 = null;
+      _awaitingAnkleWidthAfterCalib = false;
     });
     _readySince = null;
     _movementSince = null;
     _countdownRunning = false;
   }
 
+  /// handles which measurement to calculate depedning on which basmi measurement selected
   void _calculateMeasurement() {
     if (widget.measurement == "Intermalleolar Distance") {
       _calculateIntermalleolar();
-    } else if (widget.measurement == "Lateral Flexion") {
+    } else if (widget.measurement == "Lumbar Side Flexion") {
       _calculateSideFlexion();
     } else if (widget.measurement == "Cervical Rotation") {
       _calculateCervicalRotation();
     }
   }
 
+  /// calculates intermalleolar distance
   void _calculateIntermalleolar() {
     if (_capturedStart == null) {
       return;
@@ -160,6 +160,11 @@ class _CameraScreenState extends State<CameraScreen> {
     final distPx = distance(leftAnkle, rightAnkle);
     final approxCm = _pxToCm(distPx);
 
+    if (approxCm == null) {
+      _setAndSaveResult("Calibration required");
+      return;
+    }
+
     double correctedCm = approxCm;
     if (_ankleWidthCm != null && _ankleWidthCm! > 0) {
       correctedCm = (approxCm - (_ankleWidthCm! * 1.1)).clamp(
@@ -169,15 +174,13 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     if (_ankleWidthCm != null) {
-      _setAndSaveResult(
-        "Intermalleolar: ${correctedCm.toStringAsFixed(1)} cm "
-        "(raw: ${approxCm.toStringAsFixed(1)} cm)",
-      );
+      _setAndSaveResult("${correctedCm.toStringAsFixed(1)} cm");
     } else {
       _setAndSaveResult("Distance: ${approxCm.toStringAsFixed(1)} cm");
     }
   }
 
+  /// side flexion calculation
   void _calculateSideFlexion() {
     if (_capturedStart == null || _capturedEnd == null) {
       return;
@@ -203,9 +206,14 @@ class _CameraScreenState extends State<CameraScreen> {
     final deltaPx = endOffset - startOffset;
     final approxCm = _pxToCm(deltaPx.abs());
 
-    _setAndSaveResult("Side flexion: ${approxCm.toStringAsFixed(1)} cm");
+    if (approxCm == null) {
+      _setAndSaveResult("Calibration required");
+      return;
+    }
+    _setAndSaveResult("${approxCm.toStringAsFixed(1)} cm");
   }
 
+  /// Cervical rotation calculation
   void _calculateCervicalRotation() {
     if (_capturedStart == null || _capturedEnd == null) {
       return;
@@ -246,42 +254,109 @@ class _CameraScreenState extends State<CameraScreen> {
     final deltaRad = endAngle - startAngle;
     final deltaDeg = (deltaRad * 180 / pi).abs();
 
-    _setAndSaveResult(
-      "Cervical rotation: ${deltaDeg.toStringAsFixed(1)} degrees",
-    );
+    _setAndSaveResult("${deltaDeg.toStringAsFixed(1)} degrees");
   }
 
+  ///updates displayed measurement result and for basmi menu
   void _setAndSaveResult(String result) {
-    _resultText = result;
+    setState(() {
+      _resultText = result;
+    });
     widget.onMeasurementSaved?.call(widget.measurement, result);
   }
 
-  String _instructionText() {
-    if (_isCalibrating) {
-      return "Click two points a known distance apart";
+  /// changes top bar display to show what stage measurement is to user
+  String _stageTitle() {
+    if (_isCalibrating) return "Stage: Calibration";
+
+    if (_countdownValue != null) return "Stage: Capturing";
+
+    if (_stage == "cameraSetup") return "Stage: Camera Setup";
+    if (_stage == "positioning") return "Stage: Start Position";
+    if (_stage == "capturedStart") return "Stage: Movement";
+    if (_stage == "result") return "Stage: Complete";
+
+    return "Measurement";
+  }
+
+  /// handles what instructions to display on screen depending on progress through measurment so system state
+  String _displayMessage() {
+    if (_stage == "cameraSetup") {
+      if (widget.measurement == "Cervical Rotation") {
+        return "Place the camera on a table directly in front of you so your head and shoulders are clearly visible. When ready, click Camera Set Up Complete";
+      }
+
+      if ((widget.measurement == "Lumbar Side Flexion" ||
+          widget.measurement == "Intermalleolar Distance")) {
+        return "Place the camera low down 2-3 meters away so that your feet to shoulders are visible during measurement. Place the Calibration Object next to where you will stand. When ready, click Camera Set Up Complete to move onto Calibration";
+      }
+
+      // if (_cmPerPixel == null && widget.measurement != "Cervical Rotation") {
+      //   return "Place the calibration object in view, then click Start Calibration";
+      // }
+
+      // if (widget.measurement == "Intermalleolar Distance" &&
+      //     _ankleWidthCm == null) {
+      //   return "Enter your ankle width using the button on the left, then continue";
+      // }
+
+      // return widget.measurement == "Cervical Rotation"
+      //     ? "Position the camera so your upper body is clear and you can face straight forward"
+      //     : "Position the camera so your full body and calibration object are clearly visible, then press Camera Set Up Complete";
+      return "Begin camera setup";
     }
 
-    if (_stage == "result") {
-      return "Measurement complete. Press reset to repeat";
+    if (_cmPerPixel == null &&
+        widget.measurement != "Cervical Rotation" &&
+        !_isCalibrating) {
+      return "Calibration required: Click Calibration on the left to begin";
+    }
+
+    if (_isCalibrating) {
+      if (_awaitingAnkleWidthAfterCalib) {
+        return "Enter your ankle width to finish setup";
+      }
+      if (_calibPoint1 == null) {
+        return "Click the first point on the Calibration Object";
+      }
+      if (_calibPoint2 == null) {
+        return "First point selected. Click the second point on the Calibration Object. Do not move the camera after this";
+      }
+      return "Enter the real distance between these two points";
+    }
+
+    // if (_ankleWidthCm == null &&
+    //     widget.measurement == "Intermalleolar Distance") {
+    //   return "Please click Ankle Width on the left and enter the width of your ankle";
+    // }
+
+    if (_countdownValue != null) {
+      return "Hold still... preparing to capture";
+    }
+
+    if (_stage == "result" && _resultText.isNotEmpty) {
+      return "Measurement Complete: ${_resultText}. You may now return to the previous page.";
     }
 
     if (widget.measurement == "Intermalleolar Distance") {
-      // return _stage == "positioning"
-      //     ? "Stand facing the camera and capture your starting position"
-      //     : "Move your feet apart and capture again";
-      return "Stand facing the camera with feet apart and hold still for capture";
-    } else if (widget.measurement == "Lateral Flexion") {
-      return _stage == "positioning"
-          ? "Stand upright and hold still for automatic capture"
-          : "Bend sideways and hold still for automatic capture";
-    } else if (widget.measurement == "Cervical Rotation") {
-      return _stage == "positioning"
-          ? "Face forward and hold still for automatic capture"
-          : "Rotate your head and hold still for automatic capture";
+      return "In line with Calibration Object, Stand with feet as far apart as comfortable and hold still when all lines are green for capture";
     }
-    return "Hold still for automatic capture";
+
+    if (widget.measurement == "Lumbar Side Flexion") {
+      return _stage == "positioning"
+          ? "In line with Calibration Object, stand upright and hold still when all lines are green for capture"
+          : "Reach to the floor by side flexing to the left, then hold still for capture";
+    }
+
+    if (widget.measurement == "Cervical Rotation") {
+      return _stage == "positioning"
+          ? "Face forward and hold still when all lines are green for capture"
+          : "Turn your head as far as comfortable in one direction, then hold still for capture";
+    }
+    return "Hold still for capture";
   }
 
+  /// runs pose estimation model on camera feed and initiates auto capture when working
   void _startPoseLoop() async {
     while (mounted) {
       await Future.delayed(const Duration(milliseconds: 300));
@@ -319,15 +394,22 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  /// checks if user is in neutral or moved and displays correct red/green lines
   GuidanceState _guidanceState() {
     if (_keypoints == null) {
       return GuidanceState(isReady: false, lines: []);
     }
 
     if (widget.measurement == 'Cervical Rotation') {
-      return _guidanceForCervical();
-    } else if (widget.measurement == 'Lateral Flexion') {
-      return _guidanceForLateralFlexion();
+      // return _guidanceForCervical();
+      return _stage == "positioning"
+          ? _guidanceForCervical()
+          : _guidanceForCervicalMoved();
+    } else if (widget.measurement == 'Lumbar Side Flexion') {
+      // return _guidanceForLumbarSideFlexion();
+      return _stage == "positioning"
+          ? _guidanceForLumbarSideFlexion()
+          : _guidanceForLumbarSideFlexionMoved();
     } else if (widget.measurement == 'Intermalleolar Distance') {
       return _guidanceForIntermalleolar();
     }
@@ -335,6 +417,7 @@ class _CameraScreenState extends State<CameraScreen> {
     return GuidanceState(isReady: false, lines: []);
   }
 
+  /// displays red/green lines for level shoulders and nose central for cervical rotation
   GuidanceState _guidanceForCervical() {
     final leftShoulder = getKeypoint(_keypoints!, 'left_shoulder');
     final rightShoulder = getKeypoint(_keypoints!, 'right_shoulder');
@@ -375,7 +458,36 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  GuidanceState _guidanceForLateralFlexion() {
+  /// displays red/green lines for cervical after user has moved as no longer needs line to nose
+  GuidanceState _guidanceForCervicalMoved() {
+    final leftShoulder = getKeypoint(_keypoints!, 'left_shoulder');
+    final rightShoulder = getKeypoint(_keypoints!, 'right_shoulder');
+
+    if (!hasGoodScore(leftShoulder) || !hasGoodScore(rightShoulder)) {
+      return GuidanceState(isReady: false, lines: []);
+    }
+
+    final shoulderLevel = absDiff(getY(leftShoulder), getY(rightShoulder)) < 20;
+
+    // final shoulderMidX = (getX(leftShoulder) + getX(rightShoulder)) / 2.0;
+    // final noseCentered = absDiff(getX(nose), shoulderMidX) < 35;
+
+    final isReady = shoulderLevel;
+
+    return GuidanceState(
+      isReady: isReady,
+      lines: [
+        GuideLine(
+          startName: 'left_shoulder',
+          endName: 'right_shoulder',
+          color: shoulderLevel ? Colors.green : Colors.red,
+        ),
+      ],
+    );
+  }
+
+  /// displays red/green lines for real time posture guidance for Lumbar side felxion
+  GuidanceState _guidanceForLumbarSideFlexion() {
     final leftShoulder = getKeypoint(_keypoints!, 'left_shoulder');
     final rightShoulder = getKeypoint(_keypoints!, 'right_shoulder');
     final leftHip = getKeypoint(_keypoints!, 'left_hip');
@@ -430,7 +542,9 @@ class _CameraScreenState extends State<CameraScreen> {
 
     final footDistance = distance(leftAnkle, rightAnkle);
     final hipWidth = distance(leftHip, rightHip);
-    final feetApartEnough = hipWidth > 0 && footDistance > hipWidth * 1.2;
+    // final feetApartEnough = hipWidth > 0 && footDistance > hipWidth * 1.2;
+    final distCm = _pxToCm(footDistance);
+    final feetApartEnough = distCm != null && distCm >= 25 && distCm <= 35;
 
     final isReady =
         shouldersLevel &&
@@ -501,6 +615,127 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
+  /// displays red/green lines for after neutral position captured as shoulders no longer need to be level
+  GuidanceState _guidanceForLumbarSideFlexionMoved() {
+    final leftShoulder = getKeypoint(_keypoints!, 'left_shoulder');
+    final rightShoulder = getKeypoint(_keypoints!, 'right_shoulder');
+    final leftHip = getKeypoint(_keypoints!, 'left_hip');
+    final rightHip = getKeypoint(_keypoints!, 'right_hip');
+    final leftElbow = getKeypoint(_keypoints!, 'left_elbow');
+    final rightElbow = getKeypoint(_keypoints!, 'right_elbow');
+    final leftWrist = getKeypoint(_keypoints!, 'left_wrist');
+    final rightWrist = getKeypoint(_keypoints!, 'right_wrist');
+    final leftKnee = getKeypoint(_keypoints!, 'left_knee');
+    final rightKnee = getKeypoint(_keypoints!, 'right_knee');
+    final leftAnkle = getKeypoint(_keypoints!, 'left_ankle');
+    final rightAnkle = getKeypoint(_keypoints!, 'right_ankle');
+
+    final required = [
+      leftShoulder,
+      rightShoulder,
+      leftHip,
+      rightHip,
+      leftElbow,
+      rightElbow,
+      leftWrist,
+      rightWrist,
+      leftKnee,
+      rightKnee,
+      leftAnkle,
+      rightAnkle,
+    ];
+
+    if (required.any((kp) => !hasGoodScore(kp))) {
+      return GuidanceState(isReady: false, lines: []);
+    }
+
+    final leftKneeAngle = angleBetweenPoints(leftHip, leftKnee, leftAnkle);
+    final rightKneeAngle = angleBetweenPoints(rightHip, rightKnee, rightAnkle);
+    final kneesStraight = leftKneeAngle > 170 && rightKneeAngle > 170;
+
+    final leftElbowAngle = angleBetweenPoints(
+      leftShoulder,
+      leftElbow,
+      leftWrist,
+    );
+    final rightElbowAngle = angleBetweenPoints(
+      rightShoulder,
+      rightElbow,
+      rightWrist,
+    );
+    final armsStraight = leftElbowAngle > 155 && rightElbowAngle > 155;
+
+    final footDistance = distance(leftAnkle, rightAnkle);
+    final hipWidth = distance(leftHip, rightHip);
+    // final feetApartEnough = hipWidth > 0 && footDistance > hipWidth * 1.2;
+    final distCm = _pxToCm(footDistance);
+    final feetApartEnough = distCm != null && distCm >= 25 && distCm <= 35;
+
+    final isReady = kneesStraight && armsStraight && feetApartEnough;
+
+    return GuidanceState(
+      isReady: isReady,
+      lines: [
+        // GuideLine(
+        //   startName: 'left_shoulder',
+        //   endName: 'right_shoulder',
+        //   color: shouldersLevel ? Colors.green : Colors.red,
+        // ),
+        // GuideLine(
+        //   startName: 'left_hip',
+        //   endName: 'right_hip',
+        //   color: hipsLevel ? Colors.green : Colors.red,
+        // ),
+        GuideLine(
+          startName: 'left_hip',
+          endName: 'left_knee',
+          color: kneesStraight ? Colors.green : Colors.red,
+        ),
+        GuideLine(
+          startName: 'left_knee',
+          endName: 'left_ankle',
+          color: kneesStraight ? Colors.green : Colors.red,
+        ),
+        GuideLine(
+          startName: 'right_hip',
+          endName: 'right_knee',
+          color: kneesStraight ? Colors.green : Colors.red,
+        ),
+        GuideLine(
+          startName: 'right_knee',
+          endName: 'right_ankle',
+          color: kneesStraight ? Colors.green : Colors.red,
+        ),
+        GuideLine(
+          startName: 'left_shoulder',
+          endName: 'left_elbow',
+          color: armsStraight ? Colors.green : Colors.red,
+        ),
+        GuideLine(
+          startName: 'left_elbow',
+          endName: 'left_wrist',
+          color: armsStraight ? Colors.green : Colors.red,
+        ),
+        GuideLine(
+          startName: 'right_shoulder',
+          endName: 'right_elbow',
+          color: armsStraight ? Colors.green : Colors.red,
+        ),
+        GuideLine(
+          startName: 'right_elbow',
+          endName: 'right_wrist',
+          color: armsStraight ? Colors.green : Colors.red,
+        ),
+        GuideLine(
+          startName: 'left_ankle',
+          endName: 'right_ankle',
+          color: feetApartEnough ? Colors.green : Colors.red,
+        ),
+      ],
+    );
+  }
+
+  /// Displays red/green lines for posture for Intermalleolar
   GuidanceState _guidanceForIntermalleolar() {
     final leftHip = getKeypoint(_keypoints!, 'left_hip');
     final rightHip = getKeypoint(_keypoints!, 'right_hip');
@@ -522,6 +757,7 @@ class _CameraScreenState extends State<CameraScreen> {
       return GuidanceState(isReady: false, lines: []);
     }
 
+    /// Threshold checks
     final leftKneeAngle = angleBetweenPoints(leftHip, leftKnee, leftAnkle);
     final rightKneeAngle = angleBetweenPoints(rightHip, rightKnee, rightAnkle);
     final kneesStraight = leftKneeAngle > 170 && rightKneeAngle > 170;
@@ -566,12 +802,13 @@ class _CameraScreenState extends State<CameraScreen> {
     return _guidanceState().isReady;
   }
 
+  /// Calculates how far user has moved from neutral
   double? _movementAmountFromStart() {
     if (_capturedStart == null || _keypoints == null) {
       return null;
     }
 
-    if (widget.measurement == "Lateral Flexion") {
+    if (widget.measurement == "Lumbar Side Flexion") {
       final startWrist = getKeypoint(_capturedStart!, 'left_wrist');
       final startHip = getKeypoint(_capturedStart!, 'left_hip');
       final liveWrist = getKeypoint(_keypoints!, 'left_wrist');
@@ -650,8 +887,9 @@ class _CameraScreenState extends State<CameraScreen> {
     return null;
   }
 
+  /// checks user has moved from neutral before capturing second position
   double _movementThreshold() {
-    if (widget.measurement == "Lateral Flexion") {
+    if (widget.measurement == "Lumbar Side Flexion") {
       return 25;
     }
     if (widget.measurement == "Cervical Rotation") {
@@ -659,10 +897,11 @@ class _CameraScreenState extends State<CameraScreen> {
     }
     if (widget.measurement == "Intermalleolar Distance") {
       return 25;
-    }
+    } // now redundant as only one position captured!
     return 20;
   }
 
+  /// Displays 3 2 1 countdown on screen and records keypoint when captures
   Future<void> _startCountdownAndCapture() async {
     if (_countdownRunning) {
       return;
@@ -708,6 +947,7 @@ class _CameraScreenState extends State<CameraScreen> {
     _countdownRunning = false;
   }
 
+  /// gets ankle width for intermalleolar
   Future<void> _askForAnkleWidth() async {
     final controller = TextEditingController(
       text: _ankleWidthCm?.toStringAsFixed(1) ?? '',
@@ -741,13 +981,27 @@ class _CameraScreenState extends State<CameraScreen> {
     if (result != null && result > 0) {
       setState(() {
         _ankleWidthCm = result;
+        _awaitingAnkleWidthAfterCalib = false;
+        _isCalibrating = false;
         // _resultText =
         // "Ankle width set: ${_ankleWidthCm!.toStringAsFixed(1)} cm";
+        _stage = "positioning";
       });
+    }
+
+    if (result == null || result <= 0) {
+      setState(() {
+        _awaitingAnkleWidthAfterCalib = true;
+      });
+      return;
     }
   }
 
+  /// checks if posture correct and for long enough and if it can capture keypoints
   void _handleAutoCapture() {
+    if (_isCalibrating || _stage == "cameraSetup") {
+      return;
+    }
     if (!_autoMode ||
         _keypoints == null ||
         _countdownRunning ||
@@ -762,11 +1016,8 @@ class _CameraScreenState extends State<CameraScreen> {
     if (widget.measurement == "Intermalleolar Distance") {
       final now = DateTime.now();
 
-      if (_isReadyNow() && _resultText != "Hold still...") {
+      if (_isReadyNow()) {
         _readySince ??= now;
-        setState(() {
-          _resultText = "Hold still...";
-        });
         final ms = now.difference(_readySince!).inMilliseconds;
         if (ms >= 800) {
           _readySince = null;
@@ -795,14 +1046,13 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     if (_stage == "capturedStart") {
+      if (!_isReadyNow()) {
+        return;
+      }
+
       final movement = _movementAmountFromStart();
-      if (movement != null &&
-          movement >= _movementThreshold() &&
-          _resultText != "Hold still...") {
+      if (movement != null && movement >= _movementThreshold()) {
         _movementSince ??= now;
-        setState(() {
-          _resultText = "Hold still...";
-        });
         final ms = now.difference(_movementSince!).inMilliseconds;
         if (ms >= 800) {
           _movementSince = null;
@@ -814,17 +1064,11 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  /// asks users to enter distance between two clikcd points
   void _askForDistance() async {
     final controller = TextEditingController();
     final RenderBox box =
         _previewKey.currentContext!.findRenderObject() as RenderBox;
-
-    // final p1 = _screenToVideo(_calibPoint1!, box.size);
-    // final p2 = _screenToVideo(_calibPoint2!, box.size);
-    //
-    // final dx = p1.dx - p2.dx;
-    // final dy = p1.dy - p2.dy;
-    // final pxDist = sqrt(dx * dx + dy * dy);
 
     final result = await showDialog<double>(
       context: context,
@@ -861,21 +1105,34 @@ class _CameraScreenState extends State<CameraScreen> {
 
       setState(() {
         _cmPerPixel = result / pxDist;
-        _isCalibrating = false;
         _calibPoint1 = null;
         _calibPoint2 = null;
-        // _resultText = "Calibrated: ${_cmPerPixel!.toStringAsFixed(4)} cm/px";
       });
+
+      if (widget.measurement == "Intermalleolar Distance") {
+        setState(() {
+          _awaitingAnkleWidthAfterCalib = true;
+        });
+        _askForAnkleWidth();
+      } else {
+        setState(() {
+          _isCalibrating = false;
+          _stage = "positioning";
+        });
+      }
     }
   }
 
-  double _pxToCm(double px) {
+  ///converts pixel distance to cm
+  double? _pxToCm(double px) {
     if (_cmPerPixel == null) {
-      throw Exception("Calibration Failed");
+      // throw Exception("Calibration Failed");
+      return null;
     }
     return px * _cmPerPixel!;
   }
 
+  ///converts point clicked on screen to coordinate in frame
   Offset _screenToVideo(Offset screen, Size size) {
     final vw = _videoW!.toDouble();
     final vh = _videoH!.toDouble();
@@ -969,7 +1226,34 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ),
 
-                    /// INSTRUCTION TEXT WIDGET
+                    /// TITLE MESSAGE WIDGET
+                    Positioned(
+                      top: 20,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 18,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: primaryColor.withOpacity(0.75),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            _stageTitle(),
+                            style: const TextStyle(
+                              color: Colors.black,
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    /// TEXT MESSAGE WIDGET
                     Positioned(
                       bottom: 20,
                       left: 13,
@@ -981,48 +1265,20 @@ class _CameraScreenState extends State<CameraScreen> {
                           vertical: 12,
                         ),
                         decoration: BoxDecoration(
-                          color: primaryColor.withOpacity(0.15),
+                          color: primaryColor.withOpacity(0.75),
                           borderRadius: BorderRadius.circular(14),
                         ),
                         child: Text(
-                          _instructionText(),
+                          _displayMessage(),
                           textAlign: TextAlign.center,
                           style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 24,
+                            color: Colors.black,
+                            fontSize: 32,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
                     ),
-
-                    /// RESULT TEXT WIDGET
-                    if (_resultText.isNotEmpty)
-                      Positioned(
-                        bottom: 20,
-                        left: 13,
-                        right: 13,
-                        child: Container(
-                          width: 300,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 12,
-                          ),
-                          decoration: BoxDecoration(
-                            color: primaryColor.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Text(
-                            _resultText,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ),
 
                     /// CONTROL PANEL
                     /// Includes Calibration, Ankle Width, Reset Button and Guidance Switch
@@ -1033,7 +1289,7 @@ class _CameraScreenState extends State<CameraScreen> {
                         width: 200,
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: primaryColor.withOpacity(0.15),
+                          color: primaryColor.withOpacity(0.75),
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
                             color: Colors.white.withOpacity(0.12),
@@ -1044,57 +1300,60 @@ class _CameraScreenState extends State<CameraScreen> {
                           children: [
                             /// CALIBRATION BUTTON
                             /// Doesn't show if measuring Cervical Rotation
-                            if (widget.measurement != "Cervical Rotation")
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _cmPerPixel == null
-                                      ? Colors.grey[700]
-                                      : primaryColor,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 14,
-                                  ),
-                                ),
-                                onPressed: () {
-                                  setState(() {
-                                    _isCalibrating = true;
-                                    _calibPoint1 = null;
-                                    _calibPoint2 = null;
-                                    _resultText =
-                                        "Click two points a known distance apart and enter distance.";
-                                  });
-                                },
-                                child: Text(
-                                  _cmPerPixel == null
-                                      ? "Calibration: Not Set"
-                                      : "Calibration: ${_cmPerPixel!.toStringAsFixed(2)}",
-                                ),
-                              ),
-                            if (widget.measurement != "Cervical Rotation")
-                              const SizedBox(height: 10),
+                            /// Now hidden
+                            // if (widget.measurement != "Cervical Rotation")
+                            //   ElevatedButton(
+                            //     style: ElevatedButton.styleFrom(
+                            //       backgroundColor: _cmPerPixel == null
+                            //           ? Colors.grey[700]
+                            //           // : primaryColor,
+                            //           : Colors.green,
+                            //       foregroundColor: Colors.white,
+                            //       padding: const EdgeInsets.symmetric(
+                            //         vertical: 14,
+                            //       ),
+                            //     ),
+                            //     onPressed: () {
+                            //       setState(() {
+                            //         _isCalibrating = true;
+                            //         _calibPoint1 = null;
+                            //         _calibPoint2 = null;
+                            //         _resultText = "";
+                            //       });
+                            //     },
+                            //     child: Text(
+                            //       _cmPerPixel == null
+                            //           ? "Start Calibration"
+                            //           : "Calibration: ${_cmPerPixel!.toStringAsFixed(2)}",
+                            //     ),
+                            //   ),
+                            // if (widget.measurement != "Cervical Rotation")
+                            //   const SizedBox(height: 10),
 
                             /// ANKLE WIDTH BUTTON
                             /// Only shows when measuring Intermalleolar Distance
-                            if (widget.measurement == "Intermalleolar Distance")
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _ankleWidthCm == null
-                                      ? Colors.grey[700]
-                                      : primaryColor,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 14,
-                                  ),
-                                ),
-                                onPressed: _askForAnkleWidth,
-                                child: Text(
-                                  _ankleWidthCm == null
-                                      ? "Ankle Width: Not Set"
-                                      : "Ankle Width: ${_ankleWidthCm!.toStringAsFixed(1)} cm",
-                                ),
-                              ),
-                            if (widget.measurement == "Intermalleolar Distance")
-                              const SizedBox(height: 10),
+                            /// now hidden
+                            // if (widget.measurement == "Intermalleolar Distance")
+                            //   ElevatedButton(
+                            //     style: ElevatedButton.styleFrom(
+                            //       backgroundColor: _ankleWidthCm == null
+                            //           ? Colors.grey[700]
+                            //           // : primaryColor,
+                            //           : Colors.green,
+                            //       foregroundColor: Colors.white,
+                            //       padding: const EdgeInsets.symmetric(
+                            //         vertical: 14,
+                            //       ),
+                            //     ),
+                            //     onPressed: _askForAnkleWidth,
+                            //     child: Text(
+                            //       _ankleWidthCm == null
+                            //           ? "Enter Ankle Width"
+                            //           : "Ankle Width: ${_ankleWidthCm!.toStringAsFixed(1)} cm",
+                            //     ),
+                            //   ),
+                            // if (widget.measurement == "Intermalleolar Distance")
+                            //   const SizedBox(height: 10),
 
                             /// MANUAL MEASUREMENT BUTTON
                             /// Removed as not needed as now automated
@@ -1108,55 +1367,106 @@ class _CameraScreenState extends State<CameraScreen> {
                             // ),
                             // const SizedBox(height: 10),
 
+                            /// CAMERA SET UP COMPLETE BUTTON
+                            if (_stage == "cameraSetup")
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blue,
+                                  foregroundColor: Colors.black,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
+                                ),
+                                onPressed: () {
+                                  setState(() {
+                                    _resultText = "";
+
+                                    if (widget.measurement ==
+                                        "Cervical Rotation") {
+                                      _stage = "positioning";
+                                    } else {
+                                      _stage = "calibration";
+                                      _isCalibrating = true;
+                                      _calibPoint1 = null;
+                                      _calibPoint2 = null;
+                                    }
+                                  });
+                                },
+                                child: const Text("Camera Set Up Complete"),
+                              ),
+                            if (_stage == "cameraSetup")
+                              const SizedBox(height: 10),
+
                             /// RESET BUTTON
                             ElevatedButton(
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.red,
-                                foregroundColor: Colors.white,
+                                foregroundColor: Colors.black,
                                 padding: const EdgeInsets.symmetric(
                                   vertical: 14,
                                 ),
                               ),
                               onPressed: _reset,
-                              child: const Text("Reset"),
+                              child: const Text("Restart Measurement"),
                             ),
-                            const SizedBox(height: 10),
+                            // const SizedBox(height: 10),
 
                             /// GUIDANCE OVERLAY SWITCH
-                            /// Kinda redundant now
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.08),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text(
-                                    "Guidance",
-                                    style: TextStyle(color: Colors.white),
-                                  ),
-                                  Switch(
-                                    value: _guidanceOn,
-                                    activeColor: primaryColor,
-                                    onChanged: (val) {
-                                      setState(() {
-                                        _guidanceOn = val;
-                                      });
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
+                            /// Turned off as now redundant feature
+                            // Container(
+                            //   padding: const EdgeInsets.symmetric(
+                            //     horizontal: 12,
+                            //     vertical: 4,
+                            //   ),
+                            //   decoration: BoxDecoration(
+                            //     color: Colors.white.withOpacity(0.08),
+                            //     borderRadius: BorderRadius.circular(12),
+                            //   ),
+                            //   child: Row(
+                            //     mainAxisAlignment:
+                            //         MainAxisAlignment.spaceBetween,
+                            //     children: [
+                            //       const Text(
+                            //         "Guidance",
+                            //         style: TextStyle(color: Colors.white),
+                            //       ),
+                            //       Switch(
+                            //         value: _guidanceOn,
+                            //         activeColor: Colors.green,
+                            //         // inactiveColor: Colors.red,
+                            //         onChanged: (val) {
+                            //           setState(() {
+                            //             _guidanceOn = val;
+                            //           });
+                            //         },
+                            //       ),
+                            //     ],
+                            //   ),
+                            // ),
                           ],
                         ),
                       ),
                     ),
+
+                    // if (_stage == "result")
+                    //   Positioned(
+                    //     bottom: 110,
+                    //     right: 20,
+                    //     child: ElevatedButton(
+                    //       style: ElevatedButton.styleFrom(
+                    //         backgroundColor: Colors.green,
+                    //         foregroundColor: Colors.white,
+                    //         padding: const EdgeInsets.symmetric(
+                    //           horizontal: 20,
+                    //           vertical: 14,
+                    //         ),
+                    //       ),
+                    //       onPressed: () {
+                    //         Navigator.pop(contex);
+                    //       },
+                    //       child: const Text("Save & Return"),
+                    //     ),
+                    //   ),
 
                     /// COUNTDOWN
                     /// Displays 3 2 1 on screen
@@ -1328,39 +1638,10 @@ class GuideOverlayPainter extends CustomPainter {
 
       canvas.drawLine(p1, p2, linePaint);
     }
-
-    //
-    // // canvas.drawLine(
-    // //   Offset(0, size.height / 2),
-    // //   Offset(size.width, size.height / 2),
-    // //   paint,
-    // // );
-    //
-    // if (keypoints != null) {
-
-    //
-    //   for (final kp in keypoints!) {
-    //     final x = (js_util.getProperty(kp, 'x') as num).toDouble();
-    //     final y = (js_util.getProperty(kp, 'y') as num).toDouble();
-    //     final score = (js_util.getProperty(kp, 'score') as num).toDouble();
-    //
-    //     if (score < 0.4) continue;
-    //
-    //     //toggle if points are mirrored
-    //     final drawX = size.width - x;
-    //     // final drawX = x;
-    //
-    //     canvas.drawCircle(Offset(drawX, y), 6, dotPaint);
-    //   }
-    // }
   }
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
-  // {  return oldDelegate.keypoints != keypoints ||
-  //       oldDelegate.videoW != videoW ||
-  //       oldDelegate.videoH != videoH;
-  // }
 }
 
 dynamic getKeypoint(List<dynamic> keypoints, String name) {
