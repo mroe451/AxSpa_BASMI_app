@@ -1,3 +1,5 @@
+///Interop to communicate between tensorflow.js and flutter/dart to access MoveNet
+
 @JS()
 library pose_service;
 
