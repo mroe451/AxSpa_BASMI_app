@@ -2,15 +2,16 @@
 
 Bath Final Year Project AxSpa BASMI
 
-## Getting Started
+## To run this code
 
-This project is a starting point for a Flutter application.
+- Must have internet connection
+- Must have Chrome installed as it is a web app
+- Must accept video and audio permissions - audio is not used by the system but app fails otherwise if declined
 
-A few resources to get you started if this is your first Flutter project:
+Suggested IDE: Android Studio
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+In Terminal:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+flutter pub get
+
+flutter run -d chrome
